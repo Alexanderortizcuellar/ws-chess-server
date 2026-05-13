@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chess Server Test Client</title>
+    <style>
+        body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
+        .container { max-width: 800px; margin: auto; }
+        .status { padding: 10px; margin-bottom: 20px; border-radius: 4px; }
+        .connected { background: #2d4a3e; color: #a3be8c; }
+        .disconnected { background: #4a2d2d; color: #bf616a; }
+        .card { background: #252526; padding: 15px; margin-bottom: 15px; border-radius: 4px; border: 1px solid #333; }
+        h3 { margin-top: 0; color: #569cd6; }
+        input, button { padding: 8px; border: 1px solid #333; background: #3c3c3c; color: #fff; border-radius: 2px; }
+        button { cursor: pointer; background: #0e639c; border: none; }
+        button:hover { background: #1177bb; }
+        #log { height: 400px; overflow-y: auto; background: #000; padding: 10px; border: 1px solid #333; }
+        .msg { margin-bottom: 5px; border-bottom: 1px solid #222; padding-bottom: 5px; }
+        .msg.sent { color: #b5cea8; }
+        .msg.received { color: #ce9178; }
+        .msg.error { color: #f44747; }
+        .game-id-display { color: #dcdcaa; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Chess Server Test Client</h2>
+        
+        <div id="status" class="status disconnected">Status: Disconnected</div>
+
+        <div class="card">
+            <h3>Connection</h3>
+            <input type="text" id="wsUrl" value="ws://127.0.0.1:3000/ws" style="width: 250px;">
+            <button onclick="connect()">Connect</button>
+            <button onclick="disconnect()">Disconnect</button>
+        </div>
+
+        <div class="card">
+            <h3>Commands</h3>
+            <div>
+                <strong>Create Game:</strong>
+                <input type="number" id="timeMs" value="600000" placeholder="Time MS">
+                <button onclick="sendCommand(event, {type: 'create_game', time_ms: parseInt(document.getElementById('timeMs').value)})">Create</button>
+            </div>
+            <hr style="border-color: #333; margin: 15px 0;">
+            <div>
+                <strong>Join Game:</strong>
+                <input type="text" id="joinId" placeholder="Game ID">
+                <button onclick="sendCommand(event, {type: 'join_game', game_id: document.getElementById('joinId').value})">Join</button>
+            </div>
+            <hr style="border-color: #333; margin: 15px 0;">
+            <div>
+                <strong>Actions (requires Game ID):</strong><br><br>
+                <input type="text" id="actionId" placeholder="Game ID" style="width: 300px;"><br><br>
+                <input type="text" id="moveUci" placeholder="Move (e.g. e2e4)">
+                <button onclick="sendCommand(event, {type: 'make_move', game_id: document.getElementById('actionId').value, uci: document.getElementById('moveUci').value})">Move</button>
+                <button onclick="sendCommand(event, {type: 'get_state', game_id: document.getElementById('actionId').value})">Get State</button>
+                <button onclick="sendCommand(event, {type: 'resign', game_id: document.getElementById('actionId').value})" style="background: #a31515;">Resign</button>
+            </div>
+        </div>
+
+        <h3>Log</h3>
+        <div id="log"></div>
+        <button onclick="document.getElementById('log').innerHTML = ''" style="margin-top: 10px; background: #333;">Clear Log</button>
+    </div>
+
+    <script>
+        let ws;
+        const logEl = document.getElementById('log');
+        const statusEl = document.getElementById('status');
+
+        function appendLog(msg, type) {
+            const div = document.createElement('div');
+            div.className = `msg ${type}`;
+            const time = new Date().toLocaleTimeString();
+            div.innerHTML = `[${time}] <strong>${type.toUpperCase()}:</strong> <pre>${JSON.stringify(msg, null, 2)}</pre>`;
+            logEl.prepend(div);
+        }
+
+        function connect() {
+            const url = document.getElementById('wsUrl').value;
+            ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                statusEl.innerText = "Status: Connected";
+                statusEl.className = "status connected";
+                appendLog({ message: "Connected to " + url }, "info");
+            };
+
+            ws.onclose = () => {
+                statusEl.innerText = "Status: Disconnected";
+                statusEl.className = "status disconnected";
+                appendLog({ message: "Disconnected" }, "info");
+            };
+
+            ws.onerror = (err) => {
+                appendLog({ error: "WebSocket Error" }, "error");
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                appendLog(data, "received");
+                
+                // Auto-fill Game ID if we get a state update
+                if (data.type === 'state' && data.snapshot && data.snapshot.game_id) {
+                    document.getElementById('actionId').value = data.snapshot.game_id;
+                    document.getElementById('joinId').value = data.snapshot.game_id;
+                }
+            };
+        }
+
+        function disconnect() {
+            if (ws) ws.close();
+        }
+
+        function sendCommand(event, cmd) {
+            if (event) event.preventDefault();
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert("Not connected!");
+                return;
+            }
+            appendLog(cmd, "sent");
+            ws.send(JSON.stringify(cmd));
+        }
+    </script>
+</body>
+</html>

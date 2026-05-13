@@ -1,0 +1,19 @@
+[package]
+name = "ws-chess-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1.37", features = ["full"] }
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.8", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+chess = "3.2.0"
+rusqlite = { version = "0.39", features = ["bundled"] }
+thiserror = "2.0.18"
+anyhow = "1.0.102"
