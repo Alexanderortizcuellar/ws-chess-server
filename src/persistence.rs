@@ -70,6 +70,20 @@ impl Db {
         .map_err(|e| AppError::Internal(e.to_string()))?
     }
 
+    pub async fn delete_game(&self, game_id: String) -> AppResult<()> {
+        let conn = self.conn.clone();
+        task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+            conn.execute(
+                "DELETE FROM games WHERE game_id = ?1",
+                params![game_id],
+            )?;
+            Ok::<(), AppError>(())
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+    }
+
     pub fn build_default_headers(game_id: &str, white: &str, black: &str, time_ms: i64) -> String {
         json!({
             "Event": "Online Game",

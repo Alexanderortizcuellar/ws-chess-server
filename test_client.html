@@ -4,71 +4,124 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Chess Server Test Client</title>
+    <link rel="stylesheet"
+          href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
     <style>
-        body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
-        .container { max-width: 800px; margin: auto; }
-        .status { padding: 10px; margin-bottom: 20px; border-radius: 4px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .left-col { display: flex; flex-direction: column; gap: 15px; }
+        .right-col { display: flex; flex-direction: column; gap: 15px; }
+        .status { padding: 10px; margin-bottom: 10px; border-radius: 4px; font-weight: bold; text-align: center; }
         .connected { background: #2d4a3e; color: #a3be8c; }
         .disconnected { background: #4a2d2d; color: #bf616a; }
-        .card { background: #252526; padding: 15px; margin-bottom: 15px; border-radius: 4px; border: 1px solid #333; }
-        h3 { margin-top: 0; color: #569cd6; }
+        .card { background: #252526; padding: 15px; border-radius: 4px; border: 1px solid #333; }
+        h3 { margin-top: 0; color: #569cd6; border-bottom: 1px solid #333; padding-bottom: 8px; margin-bottom: 15px; }
         input, button { padding: 8px; border: 1px solid #333; background: #3c3c3c; color: #fff; border-radius: 2px; }
-        button { cursor: pointer; background: #0e639c; border: none; }
+        button { cursor: pointer; background: #0e639c; border: none; font-weight: 500; }
         button:hover { background: #1177bb; }
-        #log { height: 400px; overflow-y: auto; background: #000; padding: 10px; border: 1px solid #333; }
+        #log { height: 300px; overflow-y: auto; background: #000; padding: 10px; border: 1px solid #333; font-size: 12px; }
         .msg { margin-bottom: 5px; border-bottom: 1px solid #222; padding-bottom: 5px; }
         .msg.sent { color: #b5cea8; }
         .msg.received { color: #ce9178; }
         .msg.error { color: #f44747; }
-        .game-id-display { color: #dcdcaa; font-weight: bold; }
+        #board { width: 400px; margin: 0 auto; }
+        .lobby-list { font-size: 13px; }
+        .lobby-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid #333; }
+        .lobby-item:last-child { border-bottom: none; }
+        .game-info { flex-grow: 1; }
+        .game-meta { font-size: 11px; color: #888; }
+        .btn-sm { padding: 4px 8px; font-size: 11px; }
+        .timer-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-weight: bold; font-family: monospace; font-size: 1.2em; }
+        .timer { background: #333; padding: 5px 10px; border-radius: 4px; }
+        .timer.active { background: #0e639c; color: white; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>Chess Server Test Client</h2>
-        
-        <div id="status" class="status disconnected">Status: Disconnected</div>
+        <div class="left-col">
+            <div id="status" class="status disconnected">Status: Disconnected</div>
+            
+            <div class="card">
+                <h3>Connection & Lobby</h3>
+                <div style="display: flex; gap: 5px; margin-bottom: 10px;">
+                    <input type="text" id="wsUrl" value="ws://127.0.0.1:3000/ws" style="flex-grow: 1;">
+                    <button onclick="connect()">Connect</button>
+                    <button onclick="disconnect()">Disconnect</button>
+                </div>
+                <div style="display: flex; gap: 5px;">
+                    <button onclick="sendCommand(event, {type: 'list_games'})" style="background: #4a4a4a;">Refresh Lobby</button>
+                    <button onclick="createGame()">New Game</button>
+                    <input type="number" id="timeMs" value="600000" style="width: 80px;" title="Time MS">
+                    <input type="number" id="incMs" value="0" style="width: 60px;" title="Increment MS">
+                </div>
+                
+                <div id="lobby" class="lobby-list" style="margin-top: 15px;">
+                    <div style="color: #888; text-align: center; padding: 10px;">Connect to see games</div>
+                </div>
+            </div>
 
-        <div class="card">
-            <h3>Connection</h3>
-            <input type="text" id="wsUrl" value="ws://127.0.0.1:3000/ws" style="width: 250px;">
-            <button onclick="connect()">Connect</button>
-            <button onclick="disconnect()">Disconnect</button>
+            <div class="card">
+                <h3>Game Control</h3>
+                <div style="margin-bottom: 10px;">
+                    <input type="text" id="actionId" placeholder="Game ID" style="width: 100%; box-sizing: border-box; margin-bottom: 10px;">
+                    <div style="display: flex; gap: 5px;">
+                        <input type="text" id="moveUci" placeholder="UCI (e.g. e2e4)" style="flex-grow: 1;">
+                        <button onclick="sendMove()">Move</button>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 5px;">
+                    <button onclick="sendCommand(event, {type: 'get_state', game_id: document.getElementById('actionId').value})">Get State</button>
+                    <button onclick="sendCommand(event, {type: 'resign', game_id: document.getElementById('actionId').value})" style="background: #a31515;">Resign</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Log</h3>
+                <div id="log"></div>
+                <button onclick="document.getElementById('log').innerHTML = ''" style="margin-top: 10px; background: #333; width: 100%;">Clear Log</button>
+            </div>
         </div>
 
-        <div class="card">
-            <h3>Commands</h3>
-            <div>
-                <strong>Create Game:</strong>
-                <input type="number" id="timeMs" value="600000" placeholder="Time MS">
-                <button onclick="sendCommand(event, {type: 'create_game', time_ms: parseInt(document.getElementById('timeMs').value)})">Create</button>
-            </div>
-            <hr style="border-color: #333; margin: 15px 0;">
-            <div>
-                <strong>Join Game:</strong>
-                <input type="text" id="joinId" placeholder="Game ID">
-                <button onclick="sendCommand(event, {type: 'join_game', game_id: document.getElementById('joinId').value})">Join</button>
-            </div>
-            <hr style="border-color: #333; margin: 15px 0;">
-            <div>
-                <strong>Actions (requires Game ID):</strong><br><br>
-                <input type="text" id="actionId" placeholder="Game ID" style="width: 300px;"><br><br>
-                <input type="text" id="moveUci" placeholder="Move (e.g. e2e4)">
-                <button onclick="sendCommand(event, {type: 'make_move', game_id: document.getElementById('actionId').value, uci: document.getElementById('moveUci').value})">Move</button>
-                <button onclick="sendCommand(event, {type: 'get_state', game_id: document.getElementById('actionId').value})">Get State</button>
-                <button onclick="sendCommand(event, {type: 'resign', game_id: document.getElementById('actionId').value})" style="background: #a31515;">Resign</button>
+        <div class="right-col">
+            <div class="card">
+                <h3>Chess Board</h3>
+                <div class="timer-row">
+                    <div id="blackTime" class="timer">Black: --:--</div>
+                    <div id="whiteTime" class="timer">White: --:--</div>
+                </div>
+                <div id="board"></div>
+                <div id="gameStatus" style="margin-top: 15px; text-align: center; font-weight: bold; color: #dcdcaa;">
+                    No game active
+                </div>
             </div>
         </div>
-
-        <h3>Log</h3>
-        <div id="log"></div>
-        <button onclick="document.getElementById('log').innerHTML = ''" style="margin-top: 10px; background: #333;">Clear Log</button>
     </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
 
     <script>
         let ws;
+        let board;
         const logEl = document.getElementById('log');
         const statusEl = document.getElementById('status');
+        const lobbyEl = document.getElementById('lobby');
+
+        $(document).ready(function() {
+            // Initialize board
+            board = Chessboard('board', {
+                position: 'start',
+                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+            });
+        });
+
+        function formatTime(ms) {
+            if (ms < 0) ms = 0;
+            const totalSecs = Math.floor(ms / 1000);
+            const mins = Math.floor(totalSecs / 60);
+            const secs = totalSecs % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
 
         function appendLog(msg, type) {
             const div = document.createElement('div');
@@ -86,12 +139,14 @@
                 statusEl.innerText = "Status: Connected";
                 statusEl.className = "status connected";
                 appendLog({ message: "Connected to " + url }, "info");
+                sendCommand(null, {type: 'list_games'});
             };
 
             ws.onclose = () => {
                 statusEl.innerText = "Status: Disconnected";
                 statusEl.className = "status disconnected";
                 appendLog({ message: "Disconnected" }, "info");
+                lobbyEl.innerHTML = '<div style="color: #888; text-align: center; padding: 10px;">Connect to see games</div>';
             };
 
             ws.onerror = (err) => {
@@ -102,12 +157,104 @@
                 const data = JSON.parse(event.data);
                 appendLog(data, "received");
                 
-                // Auto-fill Game ID if we get a state update
-                if (data.type === 'state' && data.snapshot && data.snapshot.game_id) {
-                    document.getElementById('actionId').value = data.snapshot.game_id;
-                    document.getElementById('joinId').value = data.snapshot.game_id;
+                if (data.type === 'state') {
+                    handleState(data.snapshot);
+                } else if (data.type === 'game_list') {
+                    handleGameList(data);
+                } else if (data.type === 'error') {
+                    document.getElementById('gameStatus').innerText = "Error: " + data.message;
+                    if (data.snapshot) handleState(data.snapshot);
                 }
             };
+        }
+
+        function handleState(snap) {
+            console.log("Game State:", snap);
+            document.getElementById('actionId').value = snap.game_id;
+            board.position(snap.fen);
+            
+            document.getElementById('whiteTime').innerText = "White: " + formatTime(snap.white_time_ms);
+            document.getElementById('blackTime').innerText = "Black: " + formatTime(snap.black_time_ms);
+            
+            document.getElementById('whiteTime').className = snap.side_to_move === 'white' ? 'timer active' : 'timer';
+            document.getElementById('blackTime').className = snap.side_to_move === 'black' ? 'timer active' : 'timer';
+
+            let statusText = "Turn: " + snap.side_to_move;
+            if (typeof snap.status === 'object') {
+                statusText = "Game Over: " + JSON.stringify(snap.status);
+            } else if (snap.status !== 'ongoing' && snap.status !== 'check') {
+                statusText = "Status: " + snap.status;
+            } else if (snap.status === 'check') {
+                statusText = "CHECK! " + snap.side_to_move + "'s turn";
+            }
+            document.getElementById('gameStatus').innerText = statusText;
+        }
+
+        function createGame() {
+            const timeMs = parseInt(document.getElementById('timeMs').value);
+            const incMs = parseInt(document.getElementById('incMs').value);
+            let config;
+            if (incMs > 0) {
+                config = { type: 'increment', time_ms: timeMs, increment_ms: incMs };
+            } else {
+                config = { type: 'sudden_death', time_ms: timeMs };
+            }
+            sendCommand(null, { type: 'create_game', config: config });
+        }
+
+        function handleGameList(data) {
+            lobbyEl.innerHTML = '<h4>Challenges</h4>';
+            if (data.challenges.length === 0) {
+                lobbyEl.innerHTML += '<div style="padding: 5px; color: #666;">No open challenges</div>';
+            }
+            data.challenges.forEach(g => {
+                const item = document.createElement('div');
+                item.className = 'lobby-item';
+                const base = g.clock_config.time_ms;
+                const inc = g.clock_config.increment_ms || 0;
+                const timeStr = formatTime(base) + (inc > 0 ? `+${inc/1000}` : '');
+                item.innerHTML = `
+                    <div class="game-info">
+                        <strong>${g.white || '??'} vs ${g.black || '??'}</strong>
+                        <div class="game-meta">${g.game_id.substring(0,8)}... | ${timeStr}</div>
+                    </div>
+                    <button class="btn-sm" onclick="joinGame('${g.game_id}')">Join</button>
+                `;
+                lobbyEl.appendChild(item);
+            });
+
+            lobbyEl.innerHTML += '<h4 style="margin-top: 10px;">Ongoing</h4>';
+            if (data.ongoing.length === 0) {
+                lobbyEl.innerHTML += '<div style="padding: 5px; color: #666;">No ongoing games</div>';
+            }
+            data.ongoing.forEach(g => {
+                const item = document.createElement('div');
+                item.className = 'lobby-item';
+                const base = g.clock_config.time_ms;
+                const inc = g.clock_config.increment_ms || 0;
+                const timeStr = formatTime(base) + (inc > 0 ? `+${inc/1000}` : '');
+                item.innerHTML = `
+                    <div class="game-info">
+                        <strong>${g.white} vs ${g.black}</strong>
+                        <div class="game-meta">${g.game_id.substring(0,8)}... | ${timeStr}</div>
+                    </div>
+                    <button class="btn-sm" onclick="joinGame('${g.game_id}')" style="background: #444;">Watch</button>
+                `;
+                lobbyEl.appendChild(item);
+            });
+        }
+
+        function joinGame(id) {
+            document.getElementById('actionId').value = id;
+            sendCommand(null, {type: 'join_game', game_id: id});
+        }
+
+        function sendMove() {
+            const uci = document.getElementById('moveUci').value;
+            const id = document.getElementById('actionId').value;
+            if (!id) return alert("Select a game first");
+            sendCommand(null, {type: 'make_move', game_id: id, uci: uci});
+            document.getElementById('moveUci').value = '';
         }
 
         function disconnect() {

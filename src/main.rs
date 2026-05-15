@@ -2,7 +2,7 @@ mod error;
 mod game_logic;
 mod persistence;
 mod server_lobby;
-mod time_notify;
+mod clock;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

@@ -19,10 +19,25 @@ Creates a new game room and assigns the sender as the White player.
   ```json
   {
     "type": "create_game",
-    "time_ms": 600000
+    "config": {
+      "type": "sudden_death",
+      "time_ms": 600000
+    }
   }
   ```
-- **`time_ms`**: Initial time for each player in milliseconds (e.g., 600000 for 10 minutes).
+  OR (with increment):
+  ```json
+  {
+    "type": "create_game",
+    "config": {
+      "type": "increment",
+      "time_ms": 180000,
+      "increment_ms": 2000
+    }
+  }
+  ```
+- **`time_ms`**: Initial time for each player in milliseconds.
+- **`increment_ms`**: Time added to a player's clock after each move (Fischer increment).
 
 ### 2. `join_game`
 Joins an existing game. If the Black slot is empty, the sender becomes Black. Otherwise, the sender joins as a spectator.
@@ -56,13 +71,32 @@ Resigns the game for the player sending the command.
   }
   ```
 
-### 5. `get_state`
+### 5. `abort`
+Aborts the game. This command is only valid if the game is still ongoing and is sent by one of the players. Aborted games are removed from the server and are not saved to the database.
+- **Payload:**
+  ```json
+  {
+    "type": "abort",
+    "game_id": "uuid-string"
+  }
+  ```
+
+### 6. `get_state`
 Requests the current full snapshot of the game.
 - **Payload:**
   ```json
   {
     "type": "get_state",
     "game_id": "uuid-string"
+  }
+  ```
+
+### 7. `list_games`
+Requests the list of active challenges and ongoing games.
+- **Payload:**
+  ```json
+  {
+    "type": "list_games"
   }
   ```
 
@@ -83,10 +117,11 @@ Broadcasted whenever the game state changes (moves, joins, game end).
       "last_move": "string | null",
       "white_time_ms": number,
       "black_time_ms": number,
-      "status": "ongoing" | "check" | {"checkmate": {"winner": "string"}} | {"draw": {"reason": "string"}} | {"resigned": {"winner": "string"}} | {"time_expired": {"winner": "string"}},
+      "status": "ongoing" | "check" | {"checkmate": {"winner": "string"}} | {"draw": {"reason": "string"}} | {"resigned": {"winner": "string"}} | {"time_expired": {"winner": "string"}} | "aborted",
       "events": [
         { "type": "check", "color_in_check": "string" },
         { "type": "checkmate", "winner": "string" },
+        { "type": "aborted" },
         ...
       ],
       "side_to_move": "white" | "black"
@@ -94,7 +129,32 @@ Broadcasted whenever the game state changes (moves, joins, game end).
   }
   ```
 
-### 2. `error`
+### 2. `game_list`
+Sent in response to a `list_games` command.
+- **Payload Schema:**
+  ```json
+  {
+    "type": "game_list",
+    "challenges": [
+      {
+        "game_id": "string",
+        "white": "string | null",
+        "black": "string | null",
+        "clock_config": { ... }
+      }
+    ],
+    "ongoing": [
+      {
+        "game_id": "string",
+        "white": "string",
+        "black": "string",
+        "clock_config": { ... }
+      }
+    ]
+  }
+  ```
+
+### 3. `error`
 Sent directly to a client when a command fails or is invalid.
 - **Payload:**
   ```json

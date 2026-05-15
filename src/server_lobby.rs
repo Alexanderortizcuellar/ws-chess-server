@@ -9,7 +9,7 @@ use axum::{
 };
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, sync::{Arc, Mutex}};
+use std::{collections::HashMap, sync::{Arc, Mutex}, time::Duration};
 use tokio::sync::{mpsc, Notify, RwLock};
 use uuid::Uuid;
 
@@ -17,7 +17,7 @@ use crate::{
     error::{AppError, AppResult},
     game_logic::{self, GameCore, GameEvent, GameSnapshot, GameStatus},
     persistence::{Db, StoredGame},
-    time_notify::ChessClock,
+    clock::{ChessClock, ClockConfig},
 };
 
 #[derive(Clone)]
@@ -40,14 +40,24 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) ->
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+#[derive(Debug, Serialize)]
+pub struct GameSummary {
+    pub game_id: String,
+    pub white: Option<String>,
+    pub black: Option<String>,
+    pub clock_config: ClockConfig,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientCommand {
-    CreateGame { time_ms: i64 },
+    CreateGame { config: ClockConfig },
     JoinGame { game_id: String },
     MakeMove { game_id: String, uci: String },
     Resign { game_id: String },
+    Abort { game_id: String },
     GetState { game_id: String },
+    ListGames,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +65,10 @@ enum ClientCommand {
 enum ServerMessage {
     State { snapshot: GameSnapshot },
     Error { message: String, snapshot: Option<GameSnapshot> },
+    GameList {
+        challenges: Vec<GameSummary>,
+        ongoing: Vec<GameSummary>,
+    },
 }
 
 #[derive(Clone)]
@@ -71,7 +85,7 @@ pub(crate) struct GameRoom {
     black: Option<ClientHandle>,
     spectators: Vec<ClientHandle>,
     notify: Arc<Notify>,
-    time_control_ms: i64,
+    clock_config: ClockConfig,
 
     ended: bool,
     result_str: String,
@@ -80,10 +94,8 @@ pub(crate) struct GameRoom {
 }
 
 impl GameRoom {
-    fn new(id: String, time_control_ms: i64) -> Self {
-        let mut clock = ChessClock::new(time_control_ms);
-        clock.set_active(chess::Color::White);
-        clock.start();
+    fn new(id: String, config: ClockConfig) -> Self {
+        let clock = ChessClock::new(config.clone());
 
         Self {
             id,
@@ -93,7 +105,7 @@ impl GameRoom {
             black: None,
             spectators: vec![],
             notify: Arc::new(Notify::new()),
-            time_control_ms,
+            clock_config: config,
             ended: false,
             result_str: "*".into(),
             terminal_status: None,
@@ -204,17 +216,53 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
 async fn process_command(cmd: ClientCommand, state: &Arc<AppState>, client: &ClientHandle) -> AppResult<()> {
     match cmd {
-        ClientCommand::CreateGame { time_ms } => handle_create_game(time_ms, state, client).await,
+        ClientCommand::CreateGame { config } => handle_create_game(config, state, client).await,
         ClientCommand::JoinGame { game_id } => handle_join_game(game_id, state, client).await,
         ClientCommand::GetState { game_id } => handle_get_state(game_id, state, client).await,
         ClientCommand::MakeMove { game_id, uci } => handle_make_move(game_id, uci, state, client).await,
         ClientCommand::Resign { game_id } => handle_resign(game_id, state, client).await,
+        ClientCommand::Abort { game_id } => handle_abort(game_id, state, client).await,
+        ClientCommand::ListGames => handle_list_games(state, client).await,
     }
 }
 
-async fn handle_create_game(time_ms: i64, state: &Arc<AppState>, client: &ClientHandle) -> AppResult<()> {
+async fn handle_list_games(state: &Arc<AppState>, client: &ClientHandle) -> AppResult<()> {
+    let lobby = state.lobby.read().await;
+    let mut challenges = Vec::new();
+    let mut ongoing = Vec::new();
+
+    for room_mutex in lobby.values() {
+        let r = room_mutex.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+        if r.ended {
+            continue;
+        }
+
+        let summary = GameSummary {
+            game_id: r.id.clone(),
+            white: r.white.as_ref().map(|c| format!("client-{}", &c.id[..8])),
+            black: r.black.as_ref().map(|c| format!("client-{}", &c.id[..8])),
+            clock_config: r.clock_config.clone(),
+        };
+
+        if r.white.is_none() || r.black.is_none() {
+            challenges.push(summary);
+        } else {
+            ongoing.push(summary);
+        }
+    }
+
+    let msg = ServerMessage::GameList {
+        challenges,
+        ongoing,
+    };
+    let text = serde_json::to_string(&msg)?;
+    let _ = client.tx.send(Message::Text(text));
+    Ok(())
+}
+
+async fn handle_create_game(config: ClockConfig, state: &Arc<AppState>, client: &ClientHandle) -> AppResult<()> {
     let game_id = Uuid::new_v4().to_string();
-    let room = Arc::new(Mutex::new(GameRoom::new(game_id.clone(), time_ms)));
+    let room = Arc::new(Mutex::new(GameRoom::new(game_id.clone(), config)));
 
     {
         let mut r = room.lock().map_err(|e| AppError::Internal(e.to_string()))?;
@@ -259,6 +307,11 @@ async fn handle_join_game(game_id: String, state: &Arc<AppState>, client: &Clien
         } else if !is_white && !is_black {
             r.spectators.push(client.clone());
         }
+
+        if r.white.is_some() && r.black.is_some() && !r.ended {
+            r.clock.start();
+        }
+
         let snap = r.snapshot();
         r.broadcast(&ServerMessage::State { snapshot: snap });
         build_stored_game(&r)
@@ -310,6 +363,10 @@ async fn handle_make_move(game_id: String, uci: String, state: &Arc<AppState>, c
 
         if r.core.side_to_move() != mover_color {
             return send_error(client, "Not your turn", Some(r.snapshot()));
+        }
+
+        if !r.clock.is_running() {
+            r.clock.start();
         }
 
         r.clock.set_active(mover_color);
@@ -375,6 +432,44 @@ async fn handle_resign(game_id: String, state: &Arc<AppState>, client: &ClientHa
     Ok(())
 }
 
+async fn handle_abort(game_id: String, state: &Arc<AppState>, client: &ClientHandle) -> AppResult<()> {
+    let room = {
+        let lobby = state.lobby.read().await;
+        lobby.get(&game_id).cloned()
+    };
+    let Some(room) = room else {
+        return send_error(client, "Game not found", None);
+    };
+
+    {
+        let mut r = room.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+        if r.ended {
+            return send_error(client, "Game already ended", Some(r.snapshot()));
+        }
+
+        let is_player = r.white.as_ref().map(|p| p.id.as_str()) == Some(&client.id)
+            || r.black.as_ref().map(|p| p.id.as_str()) == Some(&client.id);
+
+        if !is_player {
+            return send_error(client, "Only players can abort", Some(r.snapshot()));
+        }
+
+        end_by_abort(&mut r);
+        r.notify.notify_one();
+        let snap = r.snapshot();
+        r.broadcast(&ServerMessage::State { snapshot: snap });
+    }
+
+    state.db.delete_game(game_id.clone()).await?;
+
+    {
+        let mut lobby = state.lobby.write().await;
+        lobby.remove(&game_id);
+    }
+
+    Ok(())
+}
+
 fn send_error(client: &ClientHandle, msg: &str, snapshot: Option<GameSnapshot>) -> AppResult<()> {
     let payload = ServerMessage::Error { message: msg.into(), snapshot };
     let text = serde_json::to_string(&payload)?;
@@ -391,6 +486,14 @@ fn end_by_resign(room: &mut GameRoom, winner: chess::Color) {
     room.result_str = if w == "white" { "1-0" } else { "0-1" }.into();
 }
 
+fn end_by_abort(room: &mut GameRoom) {
+    room.ended = true;
+    room.clock.stop();
+    room.terminal_events = vec![GameEvent::Aborted];
+    room.terminal_status = Some(GameStatus::Aborted);
+    room.result_str = "0-0".into();
+}
+
 fn end_by_time(room: &mut GameRoom, winner: chess::Color) {
     room.ended = true;
     room.clock.stop();
@@ -403,7 +506,7 @@ fn end_by_time(room: &mut GameRoom, winner: chess::Color) {
 fn build_stored_game(room: &GameRoom) -> StoredGame {
     let white_name = room.white.as_ref().map(|c| format!("client-{}", &c.id[..8])).unwrap_or_else(|| "white".into());
     let black_name = room.black.as_ref().map(|c| format!("client-{}", &c.id[..8])).unwrap_or_else(|| "black".into());
-    let headers_json = Db::build_default_headers(&room.id, &white_name, &black_name, room.time_control_ms);
+    let headers_json = Db::build_default_headers(&room.id, &white_name, &black_name, room.clock_config.base_time_ms());
     StoredGame {
         game_id: room.id.clone(),
         headers_json,
@@ -416,32 +519,39 @@ fn build_stored_game(room: &GameRoom) -> StoredGame {
 fn spawn_timer_task(state: Arc<AppState>, room: Arc<Mutex<GameRoom>>) {
     tokio::spawn(async move {
         loop {
-            let (notify, dur, active_color, ended) = {
+            let (notify, dur, active_color, ended, running) = {
                 let Ok(mut r) = room.lock() else { break; };
                 r.clock.consume_elapsed();
                 let ended = r.ended;
+                let running = r.clock.is_running();
                 let active = r.core.side_to_move();
-                let dur = r.clock.active_deadline_duration();
-                (r.notify.clone(), dur, active, ended)
+                let dur = if running {
+                    r.clock.active_deadline_duration()
+                } else {
+                    Duration::from_secs(1)
+                };
+                (r.notify.clone(), dur, active, ended, running)
             };
 
             if ended { break; }
 
             tokio::select! {
                 _ = tokio::time::sleep(dur) => {
-                    let maybe = {
-                        let Ok(mut r) = room.lock() else { break; };
-                        r.clock.set_active(active_color);
-                        r.clock.consume_elapsed();
-                        if r.clock.remaining_for(active_color) <= 0 && !r.ended {
-                            end_by_time(&mut r, game_logic::opposite_color(active_color));
-                            let snap = r.snapshot();
-                            r.broadcast(&ServerMessage::State { snapshot: snap });
-                            Some(build_stored_game(&r))
-                        } else { None }
-                    };
-                    if let Some(stored) = maybe {
-                        let _ = state.db.upsert_game(stored).await;
+                    if running {
+                        let maybe = {
+                            let Ok(mut r) = room.lock() else { break; };
+                            r.clock.set_active(active_color);
+                            r.clock.consume_elapsed();
+                            if r.clock.remaining_for(active_color) <= 0 && !r.ended {
+                                end_by_time(&mut r, game_logic::opposite_color(active_color));
+                                let snap = r.snapshot();
+                                r.broadcast(&ServerMessage::State { snapshot: snap });
+                                Some(build_stored_game(&r))
+                            } else { None }
+                        };
+                        if let Some(stored) = maybe {
+                            let _ = state.db.upsert_game(stored).await;
+                        }
                     }
                 }
                 _ = notify.notified() => {}

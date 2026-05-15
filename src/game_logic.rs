@@ -12,6 +12,7 @@ pub enum GameEvent {
     Draw { reason: String },
     Resignation { winner: String },
     TimeExpiration { winner: String },
+    Aborted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,7 @@ pub enum GameStatus {
     Draw { reason: String },
     Resigned { winner: String },
     TimeExpired { winner: String },
+    Aborted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
